@@ -1,0 +1,3 @@
+[build]
+rustflags = ["-C", "opt-level=2", "-C", "target-cpu=skylake", "-C", "target-feature=+avx2,+avx,+fma", "-C", "llvm-args=-force-vector-interleave=2"]
+
