@@ -1,4 +1,8 @@
-use rand::{RngCore, rngs::ThreadRng, thread_rng};
+use rand::{thread_rng};
+use rand::Rng;
+use rand_distr::{Normal, Distribution};
+
+use rayon::prelude::*;
 
 type fty = f64;
 type ity = i64;
@@ -106,40 +110,117 @@ pub fn runif(index: usize) -> f64 {
 
 pub fn rnorm(index: usize) -> f64 {
     qnorm(runif(index) * 0.999 + 0.0005)
-    // qnorm(runif(index))
 }
 
-#[target_feature(enable = "avx2")]
-unsafe fn test_rand_distr(rng: &mut ThreadRng, d: &mut [f64]) {
-    use rand_distr::{Normal, Distribution};
+fn ref_to_usize<T>(t: &T) -> usize {
+    unsafe { std::mem::transmute(t) }
+}
 
-    // mean 2, standard deviation 3
-    let normal = Normal::new(1.0, 1.0).unwrap();
-    for d in d.iter_mut() {
-        *d = normal.sample(rng);
+#[target_feature(enable = "avx2,fma")]
+unsafe fn do_par<F: Fn(&mut f64) + Send + Sync + Clone>(d: &mut [f64], f: F) {
+    d.par_chunks_mut(0x1000)
+        .for_each(|c| c.iter_mut().for_each(f.clone()));
+}
+
+#[target_feature(enable = "avx2,fma")]
+unsafe fn test_runif(d: &mut [f64]) {
+    for (i, d) in d.iter_mut().enumerate() {
+        *d = runif(i);
     }
 }
 
+#[target_feature(enable = "avx2,fma")]
+unsafe fn test_par_runif(d: &mut [f64]) {
+    do_par(d, |d| *d = runif(ref_to_usize(d)));
+}
+
 #[target_feature(enable = "avx2")]
+unsafe fn test_rust_runif(d: &mut [f64]) {
+    let mut rng = thread_rng();
+    // mean 2, standard deviation 3
+    d.iter_mut().for_each(|d| *d = rng.gen::<f64>() );
+}
+
+#[target_feature(enable = "avx2")]
+unsafe fn test_par_rust_runif(d: &mut [f64]) {
+    let normal = Normal::new(1.0, 1.0).unwrap();
+    d.par_chunks_mut(0x1000)
+        .for_each_init(|| thread_rng(), |rng, chunk| {
+            chunk.iter_mut().for_each(|d| *d = rng.gen::<f64>() );
+        })
+}
+
+#[target_feature(enable = "avx2")]
+unsafe fn test_rust_rnorm(d: &mut [f64]) {
+    let mut rng = thread_rng();
+    // mean 2, standard deviation 3
+    let normal = Normal::new(1.0, 1.0).unwrap();
+    d.iter_mut().for_each(|d| *d = normal.sample(&mut rng) );
+}
+
+#[target_feature(enable = "avx2")]
+unsafe fn test_par_rust_rnorm(d: &mut [f64]) {
+    let normal = Normal::new(1.0, 1.0).unwrap();
+    d.par_chunks_mut(0x1000)
+        .for_each_init(|| thread_rng(), |rng, chunk| {
+            chunk.iter_mut().for_each(|d| *d = normal.sample(rng) );
+        })
+}
+
+#[target_feature(enable = "avx2,fma")]
 unsafe fn test_rnorm(d: &mut [f64]) {
     for (i, d) in d.iter_mut().enumerate() {
         *d = rnorm(i);
     }
 }
 
+#[target_feature(enable = "avx2,fma")]
+unsafe fn test_par_rnorm(d: &mut [f64]) {
+    do_par(d, |d| *d = rnorm(ref_to_usize(d)));
+}
+
 fn main() {
     let mut d = vec![0.0; 1000000];
-    for i in 0..3 {
+    for i in 0..10 {
+        unsafe {
+            let t0 = std::time::Instant::now();
+            test_runif(&mut d);
+            if i > 5 { println!("runif           {} {:?}", d.len(), t0.elapsed()); }
+        }
+        unsafe {
+            let t0 = std::time::Instant::now();
+            test_par_runif(&mut d);
+            if i > 5 { println!("par_runif       {} {:?}", d.len(), t0.elapsed()); }
+        }
+        unsafe {
+            let t0 = std::time::Instant::now();
+            test_rust_runif(&mut d);
+            if i > 5 { println!("rust_runif      {} {:?}", d.len(), t0.elapsed()); }
+        }
+        unsafe {
+            let t0 = std::time::Instant::now();
+            test_par_rust_runif(&mut d);
+            if i > 5 { println!("rust_par_runif  {} {:?}", d.len(), t0.elapsed()); }
+        }
         unsafe {
             let t0 = std::time::Instant::now();
             test_rnorm(&mut d);
-            println!("rnorm       {} {:?}", d.len(), t0.elapsed());
+            if i > 5 { println!("rnorm           {} {:?}", d.len(), t0.elapsed()); }
         }
         unsafe {
-            let mut rng = thread_rng();
             let t0 = std::time::Instant::now();
-            test_rand_distr(&mut rng, &mut d);
-            println!("rand_distr  {} {:?}", d.len(), t0.elapsed());
+            test_par_rnorm(&mut d);
+            if i > 5 { println!("par_rnorm       {} {:?}", d.len(), t0.elapsed()); }
+        }
+        unsafe {
+            let t0 = std::time::Instant::now();
+            test_rust_rnorm(&mut d);
+            if i > 5 { println!("rust_rnorm      {} {:?}", d.len(), t0.elapsed()); }
+        }
+        unsafe {
+            let t0 = std::time::Instant::now();
+            test_par_rust_rnorm(&mut d);
+            if i > 5 { println!("par_rust_rnorm  {} {:?}", d.len(), t0.elapsed()); }
         }
     }
 }
